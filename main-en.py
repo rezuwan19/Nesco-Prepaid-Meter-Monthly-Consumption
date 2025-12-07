@@ -6,22 +6,31 @@ import discord
 import asyncio
 import nest_asyncio
 
+import config
+
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-from config import (
-    CONSUMER_ID,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHAT_ID,
-    DISCORD_BOT_TOKEN,
-    DISCORD_CHANNEL_ID,
-    LOG_FILE,
-)
+# Apply nest_asyncio to help with closed event loop issues in CI environments
+nest_asyncio.apply()
 
-nest_asyncio.apply()   # IMPORTANT FIX FOR GITHUB ACTIONS
+
+# ------------------------------
+# Constants loaded from config
+# ------------------------------
+TELEGRAM_BOT_TOKEN = config.TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
+DISCORD_BOT_TOKEN = config.DISCORD_BOT_TOKEN
+DISCORD_CHANNEL_ID = int(config.DISCORD_CHANNEL_ID) if str(config.DISCORD_CHANNEL_ID).isdigit() else None
+LOG_FILE = config.LOG_FILE
+CONSUMER_ID = config.CONSUMER_ID
+CONSUMER_NAME = config.CONSUMER_NAME
+REQUESTS_TIMEOUT = getattr(config, "REQUESTS_TIMEOUT", 10)
 
 
 # ----------------------------------------------------
@@ -33,7 +42,8 @@ def load_log():
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception as e:
+        print("Failed to read log file:", e)
         return {"rows": []}
 
 
@@ -41,10 +51,13 @@ def load_log():
 # Save log file
 # ----------------------------------------------------
 def save_log(data):
-    print(f"Saving log file to: {LOG_FILE}")
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    print("Log saved successfully.")
+    try:
+        print(f"Saving log file to: {LOG_FILE}")
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        print("Log saved successfully.")
+    except Exception as e:
+        print("Failed to save log file:", e)
 
 
 # ----------------------------------------------------
@@ -54,69 +67,119 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        requests.post(url, json=payload)
+        resp = requests.post(url, json=payload, timeout=REQUESTS_TIMEOUT)
+        resp.raise_for_status()
+        print("Telegram sent OK.")
     except Exception as e:
         print("Telegram Error:", e)
 
 
 # ----------------------------------------------------
-# Discord Sender (Bot)
+# Discord Sender (Bot) - uses bot token and channel ID
 # ----------------------------------------------------
-async def send_discord(message):
-    try:
-        intents = discord.Intents.default()
-        client = discord.Client(intents=intents)
+async def _send_discord_async(message):
+    intents = discord.Intents.default()
+    client = discord.Client(intents=intents)
 
-        @client.event
-        async def on_ready():
-            channel = client.get_channel(int(DISCORD_CHANNEL_ID))
-            await channel.send(message)
+    @client.event
+    async def on_ready():
+        try:
+            channel = client.get_channel(DISCORD_CHANNEL_ID)
+            if channel is None:
+                print("Discord: channel not found or bot doesn't have access.")
+            else:
+                await channel.send(message)
+                print("Discord message sent.")
+        except Exception as e:
+            print("Discord send error in on_ready:", e)
+        finally:
             await client.close()
 
+    try:
         await client.start(DISCORD_BOT_TOKEN)
-
     except Exception as e:
-        print("Discord Error:", e)
+        print("discord.Client.start() error:", e)
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 def send_discord_safe(message):
-    """Safe Discord sender for GitHub Actions."""
+    """Safe wrapper that handles closed event loops (useful for GitHub Actions)."""
+    if not DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID is None:
+        print("Discord credentials missing; skipping Discord send.")
+        return
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+    # If loop is closed or running, create a fresh loop to run this short task
     try:
-        loop.run_until_complete(send_discord(message))
-    except RuntimeError:
-        # Restart event loop if closed
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        new_loop.run_until_complete(send_discord(message))
+        if loop.is_running():
+            # create a temporary new loop in a thread-like manner
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            new_loop.run_until_complete(_send_discord_async(message))
+            new_loop.close()
+            asyncio.set_event_loop(loop)
+        else:
+            loop.run_until_complete(_send_discord_async(message))
+    except Exception as e:
+        # Final fallback: try asyncio.run (Python 3.7+)
+        try:
+            asyncio.run(_send_discord_async(message))
+        except Exception as e2:
+            print("Discord send failed:", e, e2)
 
 
 # ----------------------------------------------------
-# Scrape NESCO Website
+# Scrape NESCO Website using Selenium
 # ----------------------------------------------------
 def scrape_nesco():
     chrome_options = Options()
+    # Use new headless if available; keep compatibility
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    # optional: reduce logging
+    chrome_options.add_argument("--log-level=3")
 
-    from selenium.webdriver.chrome.service import Service
-    service = Service(ChromeDriverManager().install())
+    try:
+        service = webdriver.chrome.service.Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception as e:
+        print("Failed to start ChromeDriver:", e)
+        raise
 
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    driver.get("https://customer.nesco.gov.bd/pre/panel")
-    time.sleep(2)
+    try:
+        driver.set_page_load_timeout(30)
+        driver.get("https://customer.nesco.gov.bd/pre/panel")
+        wait = WebDriverWait(driver, 15)
 
-    driver.find_element(By.ID, "cust_no").send_keys(CONSUMER_ID)
-    driver.find_element(By.ID, "consumption_hist_button").click()
-    time.sleep(3)
+        # Wait for the consumer input field
+        wait.until(EC.presence_of_element_located((By.ID, "cust_no")))
+        cust_input = driver.find_element(By.ID, "cust_no")
+        cust_input.clear()
+        cust_input.send_keys(CONSUMER_ID)
 
-    html = driver.page_source
-    driver.quit()
+        # click view/history button - adjust if button id changes
+        driver.find_element(By.ID, "consumption_hist_button").click()
+
+        # wait until the table appears (you may need to adjust selector)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+
+        # small pause to let JS render fully
+        time.sleep(1)
+
+        html = driver.page_source
+    finally:
+        driver.quit()
 
     soup = BeautifulSoup(html, "html.parser")
 
@@ -125,19 +188,27 @@ def scrape_nesco():
         info_box = soup.find("div", {"class": "panel-body"})
         rows = info_box.find_all("tr")
 
-        customer_name = rows[0].find_all("td")[1].text.strip()
-        consumer_number = rows[1].find_all("td")[1].text.strip()
-    except:
-        customer_name = "Not Found"
-        consumer_number = "Not Found"
+        customer_name = rows[0].find_all("td")[1].text.strip() if rows and len(rows) > 0 else config.CONSUMER_NAME
+        consumer_number = rows[1].find_all("td")[1].text.strip() if rows and len(rows) > 1 else CONSUMER_ID
+    except Exception:
+        customer_name = config.CONSUMER_NAME
+        consumer_number = CONSUMER_ID
 
     table = soup.find("table")
-    tbody = table.find("tbody")
-    rows_out = []
+    if not table:
+        print("No table found on page.")
+        return customer_name, consumer_number, []
 
+    tbody = table.find("tbody")
+    if not tbody:
+        print("Table has no tbody.")
+        return customer_name, consumer_number, []
+
+    rows_out = []
     for tr in tbody.find_all("tr"):
         cols = [td.text.strip() for td in tr.find_all("td")]
-        rows_out.append(cols)
+        if cols:
+            rows_out.append(cols)
 
     return customer_name, consumer_number, rows_out
 
@@ -148,20 +219,32 @@ def scrape_nesco():
 def main():
     print("🔍 Checking NESCO Data...")
 
-    customer_name, consumer_number, new_rows = scrape_nesco()
-    log = load_log()
+    try:
+        customer_name, consumer_number, new_rows = scrape_nesco()
+    except Exception as e:
+        print("Scrape failed:", e)
+        return
 
-    previous_rows = log["rows"]
+    log = load_log()
+    previous_rows = log.get("rows", [])
     new_found = False
 
     for row in new_rows:
+        # Use safer comparison if row lengths differ - treat identical if exact list match
         if row not in previous_rows:
             new_found = True
 
+            # Some tables change shape; guard indexes with try/except
+            def safe(idx, default="N/A"):
+                try:
+                    return row[idx]
+                except Exception:
+                    return default
+
             msg = (
                 f"📉Monthly Usage📉\n\n"
-                f"👤 Consumer Name: {customer_name}\n"
-                f"🔢 Consumer No.: {consumer_number}\n\n"
+                f"👤 Consumer Name: {CONSUMER_NAME}\n"
+                f"🔢 Consumer No.: {CONSUMER_ID}\n\n"
                 f"🗓️ Month: {row[1]}\n"
                 f"📅 Year: {row[0]}\n\n"
                 f"💳 Total Recharge (Tk.): {row[2]} Tk\n"
@@ -174,7 +257,8 @@ def main():
                 f"🎁 Rebate: {row[3]} Tk\n"
                 f"💰 Total Usage/Deduction (Tk.): {row[10]} Tk\n"
             )
-
+            
+            print("New row found, sending messages...")
             send_telegram(msg)
             send_discord_safe(msg)
 
@@ -189,4 +273,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
