@@ -77,64 +77,48 @@ def send_telegram(message):
 # ----------------------------------------------------
 # Discord Sender (Bot) - uses bot token and channel ID
 # ----------------------------------------------------
-async def _send_discord_async(message):
-    intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
-
-    @client.event
-    async def on_ready():
-        try:
-            channel = client.get_channel(DISCORD_CHANNEL_ID)
-            if channel is None:
-                print("Discord: channel not found or bot doesn't have access.")
-            else:
-                await channel.send(message)
-                print("Discord message sent.")
-        except Exception as e:
-            print("Discord send error in on_ready:", e)
-        finally:
-            await client.close()
-
-    try:
-        await client.start(DISCORD_BOT_TOKEN)
-    except Exception as e:
-        print("discord.Client.start() error:", e)
-        try:
-            await client.close()
-        except Exception:
-            pass
-
-
 def send_discord_safe(message):
-    """Safe wrapper that handles closed event loops (useful for GitHub Actions)."""
+    """
+    Send a message to a Discord channel using Bot token via REST API.
+    This avoids starting a websocket client and event-loop issues in CI.
+    """
     if not DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID is None:
         print("Discord credentials missing; skipping Discord send.")
         return
 
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Ensure channel id is a string
+        channel_id = str(DISCORD_CHANNEL_ID)
 
-    # If loop is closed or running, create a fresh loop to run this short task
-    try:
-        if loop.is_running():
-            # create a temporary new loop in a thread-like manner
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            new_loop.run_until_complete(_send_discord_async(message))
-            new_loop.close()
-            asyncio.set_event_loop(loop)
+        # Build authorization header: prefix with "Bot " if needed
+        auth_token = DISCORD_BOT_TOKEN
+        if not auth_token.lower().startswith("bot "):
+            auth_header = f"Bot {auth_token}"
         else:
-            loop.run_until_complete(_send_discord_async(message))
-    except Exception as e:
-        # Final fallback: try asyncio.run (Python 3.7+)
-        try:
-            asyncio.run(_send_discord_async(message))
-        except Exception as e2:
-            print("Discord send failed:", e, e2)
+            auth_header = auth_token
 
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        headers = {
+            "Authorization": auth_header,
+            "User-Agent": "nesco-notifier/1.0",
+            "Content-Type": "application/json",
+        }
+        payload = {"content": message}
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=REQUESTS_TIMEOUT)
+        if resp.status_code == 200 or resp.status_code == 201:
+            print("Discord message sent (REST).")
+        elif resp.status_code == 401:
+            print("Discord REST error: Unauthorized (check token).", resp.status_code, resp.text)
+        elif resp.status_code == 403:
+            print("Discord REST error: Forbidden (bot missing permissions / not in server).", resp.status_code, resp.text)
+        elif resp.status_code == 404:
+            print("Discord REST error: Channel not found.", resp.status_code, resp.text)
+        else:
+            # handle rate-limit (429) or other non-OK statuses
+            print(f"Discord REST returned {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print("Discord REST send failed:", e)
 
 # ----------------------------------------------------
 # Scrape NESCO Website using Selenium
@@ -273,3 +257,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
