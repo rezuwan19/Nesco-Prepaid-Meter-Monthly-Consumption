@@ -134,6 +134,7 @@ Your repo includes two main scripts:
 - If you need English message output Rename **main-en.py to main.py**
 
 - If you need Bangla message output Rename **main-ban.py to main.py**
+  
 6️⃣ Run one of the main files
 
 ```python
