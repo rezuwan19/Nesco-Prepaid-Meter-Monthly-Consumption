@@ -145,10 +145,10 @@ python main.py
 ## 📸 OutPut (Screenshots)
 
 <p align="center" width="100%">
-  <img src="screenshort/Telegram-English.png" width="40%">
-  <img src="screenshort/Discord-English.png" width="40%">
-  <img src="screenshort/Telegram-Bangla.png" width="40%">
-  <img src="screenshort/Discord-Bangla.png" width="40%">
+  <img src="screenshots/Telegram-English.png" width="40%">
+  <img src="screenshots/Discord-English.png" width="40%">
+  <img src="screenshots/Telegram-Bangla.png" width="40%">
+  <img src="screenshots/Discord-Bangla.png" width="40%">
 </p>
 
 ---
