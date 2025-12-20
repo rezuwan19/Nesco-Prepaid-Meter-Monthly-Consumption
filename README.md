@@ -157,7 +157,9 @@ python main.py
 <a href="https://coff.ee/rezuwan19">
   <img src="screenshots/buymeacoffee.png" width="128px">
 </a>
-
+<a href="https://pathaopay.me/@rezuwan19">
+  <img src="screenshots/pathaopay.png" width="128px">
+</a>
 ---
 
 ## GitHub Actions
