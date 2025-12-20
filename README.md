@@ -153,6 +153,13 @@ python main.py
 
 ---
 
+## Donate
+<a href="https://coff.ee/rezuwan19">
+  <img src="screenshots/buymeacoffee.png" width="128px">
+</a>
+
+---
+
 ## GitHub Actions
 1️⃣ Create a new repository on GitHub
 
